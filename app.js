@@ -9,12 +9,62 @@ require("dotenv").config();
 
 const app = express();
 
+const SEARCHAPI_KEY = "FdJt9AxydYkGvJAK6SrUP3sJ";
+const SEARCHAPI_BASE_URL =
+  process.env.SEARCHAPI_BASE_URL || "https://www.searchapi.io/api/v1/search";
+
 app.use(cors());
 app.use(express.json());
 
 app.get("/", async (req, res) => {
   res.json({ message: "SSYouTube backend running" });
 });
+
+function normalizeViews(v) {
+  if (v === undefined || v === null || v === "") return "";
+  if (typeof v === "number") return new Intl.NumberFormat("en-US").format(v);
+  return String(v);
+}
+
+function extractSearchApiVideos(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  const maybe =
+    payload.videos ||
+    payload.video_results ||
+    payload.videoResults ||
+    payload.results?.videos ||
+    payload.data?.videos;
+  return Array.isArray(maybe) ? maybe : [];
+}
+
+function toAppVideo(v) {
+  const id = v?.id || v?.video_id || v?.videoId;
+  const title = v?.title || v?.name;
+  if (!id || !title) return null;
+
+  const thumb =
+    (typeof v?.thumbnail === "string" && v.thumbnail) ||
+    v?.thumbnail?.static ||
+    v?.thumbnail?.rich ||
+    v?.thumbnail?.url ||
+    `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+
+  return {
+    id: String(id),
+    title: String(title),
+    thumbnail: String(thumb),
+    channel: v?.author || v?.channel?.title || v?.channelTitle || "",
+    views: normalizeViews(v?.views),
+    length:
+      v?.length ||
+      v?.duration ||
+      v?.length_text ||
+      v?.lengthSeconds ||
+      v?.length_seconds ||
+      "",
+    published: v?.published_time || v?.publishedAt || v?.published || ""
+  };
+}
 
 app.get("/api/search", async (req, res) => {
   console.log("✅ Received search request:", req.query);
@@ -35,77 +85,74 @@ app.get("/api/search", async (req, res) => {
   }
 
   try {
-    const apiUrl = `https://us-central1-ytmp3-tube.cloudfunctions.net/searchResult?q=${encodeURIComponent(
+    // Primary: SearchAPI.io (reliable, avoids YouTube quota surprises)
+    if (SEARCHAPI_KEY) {
+      const searchUrl = new URL(SEARCHAPI_BASE_URL);
+      searchUrl.searchParams.set("engine", "youtube");
+      searchUrl.searchParams.set("q", query);
+      searchUrl.searchParams.set("api_key", SEARCHAPI_KEY);
+
+      console.log("📡 Calling SearchAPI.io (engine=youtube)");
+      const r = await fetch(searchUrl.toString(), {
+        method: "GET",
+        headers: { Accept: "application/json" }
+      });
+      console.log(`📥 SearchAPI.io response status: ${r.status}`);
+
+      if (r.ok) {
+        const payload = await r.json();
+        const rawVideos = extractSearchApiVideos(payload);
+        const videos = rawVideos.map(toAppVideo).filter(Boolean);
+        if (videos.length) return res.json(videos);
+        console.warn("⚠️ SearchAPI.io returned no videos; falling back…");
+      } else {
+        const text = await r.text().catch(() => "");
+        console.warn("⚠️ SearchAPI.io error body:", text);
+      }
+    } else {
+      console.warn("⚠️ SEARCHAPI_KEY missing; skipping SearchAPI.io");
+    }
+
+    // Fallback: YouTube Data API v3 (requires YOUTUBE_API_KEY + quota)
+    const apiKey = "AIzaSyBroZLzFmEnzoatDROyaDIMBT-iXk28eLk";
+    if (!apiKey) {
+      return res.status(500).json({
+        error: "Missing API keys",
+        details: "Set SEARCHAPI_KEY (recommended) or YOUTUBE_API_KEY (fallback)."
+      });
+    }
+
+    const fallbackUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q=${encodeURIComponent(
       query
-    )}`;
-    console.log(`📡 Calling primary API: ${apiUrl}`);
+    )}&maxResults=5&key=${apiKey}`;
+    console.log("📡 Calling YouTube Data API fallback");
 
-    const response = await fetch(apiUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        Accept: "application/json"
-      }
-    });
+    const fallbackResponse = await fetch(fallbackUrl);
+    console.log(`📥 Fallback API response status: ${fallbackResponse.status}`);
 
-    console.log(`📥 Primary API response status: ${response.status}`);
+    if (!fallbackResponse.ok) {
+      const fbErrText = await fallbackResponse.text().catch(() => "");
+      console.warn("❌ Fallback API error body:", fbErrText);
+      throw new Error("SearchAPI and YouTube fallback failed");
+    }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.warn("⚠️ Primary API error body:", errorText);
-      console.warn("⚠️ Primary API failed. Trying fallback...");
-
-      const apiKey = "AIzaSyBroZLzFmEnzoatDROyaDIMBT-iXk28eLk";
-      if (!apiKey) {
-        return res.status(500).json({
-          error:
-            "Primary API failed and YOUTUBE_API_KEY is missing for fallback.",
-          details: errorText
-        });
-      }
-
-      const fallbackUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q=${encodeURIComponent(
-        query
-      )}&maxResults=5&key=${apiKey}`;
-      console.log("📡 Calling fallback API");
-
-      const fallbackResponse = await fetch(fallbackUrl);
-      console.log(`📥 Fallback API response status: ${fallbackResponse.status}`);
-
-      if (!fallbackResponse.ok) {
-        const fbErrText = await fallbackResponse.text();
-        console.warn("❌ Fallback API error body:", fbErrText);
-        throw new Error("Both primary and fallback APIs failed");
-      }
-
-      const fallbackData = await fallbackResponse.json();
-
-      const videoResults = fallbackData.items.map((item) => ({
-        id: item.id.videoId,
-        title: item.snippet.title,
+    const fallbackData = await fallbackResponse.json();
+    const items = Array.isArray(fallbackData?.items) ? fallbackData.items : [];
+    const videoResults = items
+      .map((item) => ({
+        id: item?.id?.videoId,
+        title: item?.snippet?.title,
         thumbnail:
-          item.snippet.thumbnails?.medium?.url ||
-          item.snippet.thumbnails?.default?.url
-      }));
+          item?.snippet?.thumbnails?.medium?.url ||
+          item?.snippet?.thumbnails?.default?.url,
+        channel: item?.snippet?.channelTitle || "",
+        views: "",
+        length: "",
+        published: item?.snippet?.publishedAt || ""
+      }))
+      .filter((v) => v.id && v.title && v.thumbnail);
 
-      return res.json(videoResults);
-    }
-
-    const data = await response.json();
-    console.log("✅ Primary API response received");
-
-    if (Array.isArray(data)) {
-      const videoResults = data.map((item) => ({
-        id: item.videoId,
-        title: item.title,
-        thumbnail: item.imgSrc
-      }));
-      return res.json(videoResults);
-    }
-
-    console.warn("❗ Unexpected format from primary API:", data);
-    return res
-      .status(500)
-      .json({ error: "Unexpected response format from primary API" });
+    return res.json(videoResults);
   } catch (error) {
     console.error("❌ Error in /api/search:", error);
     res.status(500).json({
