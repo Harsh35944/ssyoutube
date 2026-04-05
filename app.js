@@ -325,7 +325,7 @@ const SEARCHAPI_BASE_URL = 'https://www.searchapi.io/api/v1/search';
 // AIzaSyB9sgCGaNiJnKqLxMLvKm4mjYWALtbrSng
 // AIzaSyBL5qxucKJ7j5Sk3y_4FkyxywQVuS77QRg
 const YOUTUBE_API_KEYS = [
-  'AIzaSyB4nR40Nxv_er7g_caOeuEr710-nEs5bXk',
+  'AIzaSyAJuygLF9ew9VwIKWUqWpa1yxEKeI0LIjc',
   'AIzaSyB9sgCGaNiJnKqLxMLvKm4mjYWALtbrSng',
   'AIzaSyBL5qxucKJ7j5Sk3y_4FkyxywQVuS77QRg'
 ];
