@@ -526,12 +526,7 @@ app.get('/api/download-mp3', (req, res) => {
   });
 });
 
-// ================= START =================
-app.listen(port, () => {
-  console.log(`🚀 Server running: http://localhost:${port}`);
-});
-
-// working coode end 
+module.exports = app;
 
 
 
